@@ -8,6 +8,9 @@ Inputs:
         --checkpoint: Path to model checkpoint (defaults to latest in checkpoints dir)
 Outputs:
     Saves numpy arrays of prediction/target and optional figures to configured folders.
+
+use:
+    python infer.py --group n43 --sheet 0 --checkpoint outputs/checkpoints/meshgraphnet_epoch_X.pt
 """
 
 import argparse
