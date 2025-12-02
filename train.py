@@ -248,7 +248,7 @@ def main() -> None:
     optimizer = torch.optim.Adam(
         model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY
     )
-    scaler = amp.GradScaler(device_type="cuda", enabled=use_amp)
+    scaler = amp.GradScaler(enabled=use_amp)
 
     history = {"train_total": [], "val_total": [], "train_node": [], "val_node": [], "train_grad": [], "val_grad": []}
 
