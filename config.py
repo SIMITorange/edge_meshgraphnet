@@ -51,6 +51,7 @@ NODE_LOSS_WEIGHT = 1.0
 GRAD_LOSS_WEIGHT = 0.5
 BOUNDARY_LOSS_WEIGHT = 0.25  # Set to 0.0 to disable boundary weighting
 BOUNDARY_PERCENTILE = 90.0  # Percentile of doping gradient used to detect boundaries
+GRAD_EDGE_BOUNDARY_WEIGHT = 0.1  # Down-weight gradient loss on edges touching boundary to allow discontinuities
 
 # ------------------------------
 # Model hyperparameters

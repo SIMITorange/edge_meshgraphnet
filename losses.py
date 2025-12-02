@@ -46,7 +46,16 @@ def compute_loss(
     pred_diff = pred_flat[src] - pred_flat[dst]
     target_diff = target_flat[src] - target_flat[dst]
     grad_loss_all = F.smooth_l1_loss(pred_diff, target_diff, reduction="none")
-    grad_loss = grad_loss_all.mean()
+    if boundary_mask is not None and grad_weight > 0:
+        boundary_mask = boundary_mask.to(pred_flat.device)
+        boundary_on_edge = (boundary_mask[src] + boundary_mask[dst]) > 0
+        edge_weight = torch.ones_like(grad_loss_all)
+        edge_weight = torch.where(
+            boundary_on_edge, edge_weight * config.GRAD_EDGE_BOUNDARY_WEIGHT, edge_weight
+        )
+        grad_loss = (grad_loss_all * edge_weight).mean()
+    else:
+        grad_loss = grad_loss_all.mean()
 
     if boundary_mask is not None and boundary_weight > 0:
         boundary_mask = boundary_mask.to(pred_flat.device)
@@ -65,4 +74,3 @@ def compute_loss(
         "total": float(total.detach().cpu().item()),
     }
     return total, components
-
