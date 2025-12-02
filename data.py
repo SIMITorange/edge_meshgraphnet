@@ -104,6 +104,7 @@ class H5MeshGraphDataset(Dataset):
 
         doping = fields[:, config.FIELD_TO_INDEX["DopingConcentration"]]
         target = fields[:, self.target_idx]
+        space_charge = fields[:, config.FIELD_TO_INDEX["SpaceCharge"]]
         vds = float(fields[:, config.FIELD_TO_INDEX["ElectrostaticPotential"]].max())
 
         # Build raw node feature components
@@ -134,7 +135,7 @@ class H5MeshGraphDataset(Dataset):
         pos_tensor = torch.from_numpy(pos).float()
 
         boundary_mask = self._compute_boundary_mask(
-            doping=torch.from_numpy(doping).float(),
+            boundary_field=torch.from_numpy(space_charge).float(),
             edge_index=edge_index_tensor,
             percentile=self.boundary_percentile,
         )
@@ -153,28 +154,28 @@ class H5MeshGraphDataset(Dataset):
 
     @staticmethod
     def _compute_boundary_mask(
-        doping: torch.Tensor, edge_index: torch.Tensor, percentile: float
+        boundary_field: torch.Tensor, edge_index: torch.Tensor, percentile: float
     ) -> torch.Tensor:
         """
-        Identify boundary nodes by large doping gradients along edges.
+        Identify boundary nodes by large gradients of the true SpaceCharge field.
         Inputs:
-            doping: [N] tensor of doping values.
+            boundary_field: [N] tensor of SpaceCharge ground truth values.
             edge_index: [2, E] edge indices.
             percentile: Percentile threshold.
         Outputs:
             boundary_mask: [N] float tensor with 1 at boundary nodes, 0 elsewhere.
         """
         src, dst = edge_index
-        diff = torch.abs(doping[src] - doping[dst])
-        num_nodes = doping.shape[0]
+        diff = torch.abs(boundary_field[src] - boundary_field[dst])
+        num_nodes = boundary_field.shape[0]
         # Aggregate gradient magnitude to nodes using scatter_add to avoid torch_scatter dependency
-        grad_src_sum = torch.zeros(num_nodes, device=doping.device).scatter_add_(0, src, diff)
-        grad_src_cnt = torch.zeros(num_nodes, device=doping.device).scatter_add_(
+        grad_src_sum = torch.zeros(num_nodes, device=boundary_field.device).scatter_add_(0, src, diff)
+        grad_src_cnt = torch.zeros(num_nodes, device=boundary_field.device).scatter_add_(
             0, src, torch.ones_like(diff)
         )
         grad_src = grad_src_sum / grad_src_cnt.clamp(min=1)
-        grad_dst_sum = torch.zeros(num_nodes, device=doping.device).scatter_add_(0, dst, diff)
-        grad_dst_cnt = torch.zeros(num_nodes, device=doping.device).scatter_add_(
+        grad_dst_sum = torch.zeros(num_nodes, device=boundary_field.device).scatter_add_(0, dst, diff)
+        grad_dst_cnt = torch.zeros(num_nodes, device=boundary_field.device).scatter_add_(
             0, dst, torch.ones_like(diff)
         )
         grad_dst = grad_dst_sum / grad_dst_cnt.clamp(min=1)
