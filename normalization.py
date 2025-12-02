@@ -71,6 +71,8 @@ class Normalizer:
         self.doping_log_std = 1.0
         self.vds_mean = 0.0
         self.vds_std = 1.0
+        self.doping_scale = 1.0
+        self.y_asinh_scale = 1.0
         # Output scaling extra parameter (e.g., q0 for space charge)
         self.q0 = 1.0
         self.fitted = False
@@ -89,15 +91,28 @@ class Normalizer:
             Populates mean/std attributes and marks normalizer as fitted.
         """
         x_stat = RunningMeanStd()
-        y_stat = RunningMeanStd()
-        doping_stat = RunningMeanStd()
         vds_stat = RunningMeanStd()
 
-        # For SpaceCharge signed-log scaling
+        # Robust sampling pools for scale estimates
+        doping_abs_samples: List[float] = []
+        target_abs_samples: List[float] = []
         q_abs_samples: List[float] = []
         max_q_samples = 100000
+        max_pool_samples = 100000
+        rng = np.random.default_rng(config.RANDOM_SEED)
 
-        # First pass: gather input stats and, when possible, output stats.
+        def _sample_pool(values: np.ndarray, pool: List[float], max_size: int) -> None:
+            flat = np.asarray(values).reshape(-1)
+            if flat.size == 0:
+                return
+            take = min(flat.size, 1024)
+            subset = rng.choice(flat, size=take, replace=False)
+            pool.extend(subset.tolist())
+            if len(pool) > max_size:
+                # Keep the most recent samples; order does not matter for median
+                del pool[: len(pool) - max_size]
+
+        # First pass: gather coordinate/vds stats and scale estimates.
         with h5py.File(h5_path, "r") as f:
             for spec in samples:
                 grp = f[spec.group]
@@ -111,32 +126,26 @@ class Normalizer:
                     fields[:, config.FIELD_TO_INDEX["ElectrostaticPotential"]].max()
                 )
 
-                doping_log = self._signed_log10(doping)
                 x_stat.update(x_coord)
                 x_stat.update(y_coord)
-                doping_stat.update(doping_log)
+                _sample_pool(np.abs(doping), doping_abs_samples, max_pool_samples)
                 vds_stat.update(np.array([vds], dtype=np.float64))
 
                 if self.output_field == "SpaceCharge":
-                    abs_vals = np.abs(target.reshape(-1))
-                    for val in abs_vals:
-                        if len(q_abs_samples) < max_q_samples:
-                            q_abs_samples.append(float(val))
-                        else:
-                            replace_idx = np.random.randint(0, len(q_abs_samples))
-                            q_abs_samples[replace_idx] = float(val)
+                    _sample_pool(np.abs(target), q_abs_samples, max_q_samples)
                 else:
-                    prepared_target = self._prepare_target_for_stats(
-                        target=target, vds=vds
-                    )
-                    y_stat.update(prepared_target)
+                    # Collect target magnitudes for asinh scaling (after simple per-field preprocessing)
+                    if self.output_field == "ElectrostaticPotential":
+                        base = target / max(vds, self.eps)
+                    else:
+                        base = target
+                    _sample_pool(np.abs(base), target_abs_samples, max_pool_samples)
 
-        self.x_mean = x_stat.mean
-        self.x_std = max(x_stat.std, self.eps)
-        self.doping_log_mean = doping_stat.mean
-        self.doping_log_std = max(doping_stat.std, self.eps)
-        self.vds_mean = vds_stat.mean
-        self.vds_std = max(vds_stat.std, self.eps)
+        self.doping_scale = (
+            max(float(np.median(np.asarray(doping_abs_samples))), self.eps)
+            if len(doping_abs_samples) > 0
+            else 1.0
+        )
 
         if self.output_field == "SpaceCharge":
             if len(q_abs_samples) == 0:
@@ -144,19 +153,41 @@ class Normalizer:
             else:
                 median_abs = float(np.median(np.asarray(q_abs_samples)))
                 self.q0 = max(median_abs * config.SPACECHARGE_Q0_SCALE, self.eps)
-            # Second pass for y statistics using finalized q0
-            with h5py.File(h5_path, "r") as f:
-                for spec in samples:
-                    grp = f[spec.group]
-                    fields = grp["fields"][spec.sheet]
-                    target = fields[:, config.FIELD_TO_INDEX[self.output_field]]
-                    vds = float(
-                        fields[:, config.FIELD_TO_INDEX["ElectrostaticPotential"]].max()
-                    )
-                    prepared_target = self._prepare_target_for_stats(
-                        target=target, vds=vds
-                    )
-                    y_stat.update(prepared_target)
+            self.y_asinh_scale = self.q0 + self.eps
+        else:
+            if len(target_abs_samples) == 0:
+                self.y_asinh_scale = 1.0
+            else:
+                self.y_asinh_scale = max(float(np.median(np.asarray(target_abs_samples))), self.eps)
+
+        # Second pass: compute stats using finalized scales
+        doping_stat = RunningMeanStd()
+        y_stat = RunningMeanStd()
+        with h5py.File(h5_path, "r") as f:
+            for spec in samples:
+                grp = f[spec.group]
+                pos = grp["pos"][:]  # (N, 2)
+                fields = grp["fields"][spec.sheet]
+                doping = fields[:, config.FIELD_TO_INDEX["DopingConcentration"]]
+                target = fields[:, config.FIELD_TO_INDEX[self.output_field]]
+                vds = float(
+                    fields[:, config.FIELD_TO_INDEX["ElectrostaticPotential"]].max()
+                )
+
+                doping_asinh = self._asinh_scaled(doping, self.doping_scale)
+                doping_stat.update(doping_asinh)
+
+                prepared_target = self._prepare_target_for_stats(
+                    target=target, vds=vds
+                )
+                y_stat.update(prepared_target)
+
+        self.x_mean = x_stat.mean
+        self.x_std = max(x_stat.std, self.eps)
+        self.doping_log_mean = doping_stat.mean
+        self.doping_log_std = max(doping_stat.std, self.eps)
+        self.vds_mean = vds_stat.mean
+        self.vds_std = max(vds_stat.std, self.eps)
 
         self.y_mean = y_stat.mean
         self.y_std = max(y_stat.std, self.eps)
@@ -184,8 +215,8 @@ class Normalizer:
         assert self.fitted, "Normalizer must be fitted before calling transform_x."
         x_norm = (x_coord - self.x_mean) / self.x_std
         y_norm = (y_coord - self.x_mean) / self.x_std  # share stats for simplicity
-        doping_log = self._signed_log10(doping)
-        doping_norm = (doping_log - self.doping_log_mean) / self.doping_log_std
+        doping_asinh = self._asinh_scaled(doping, self.doping_scale)
+        doping_norm = (doping_asinh - self.doping_log_mean) / self.doping_log_std
         vds_norm = (vds - self.vds_mean) / self.vds_std
         vds_norm_vec = np.full_like(x_norm, vds_norm, dtype=np.float32)
         features = np.stack([x_norm, y_norm, doping_norm, vds_norm_vec], axis=1)
@@ -222,15 +253,15 @@ class Normalizer:
         pred = pred.reshape(-1)
         unnorm = pred * self.y_std + self.y_mean
         if self.output_field == "ElectrostaticPotential":
-            return unnorm * vds
+            scaled = np.sinh(unnorm) * self.y_asinh_scale
+            return scaled * vds
         if self.output_field in ("ElectricField_x", "ElectricField_y"):
-            return unnorm
+            return np.sinh(unnorm) * self.y_asinh_scale
         if self.output_field == "SpaceCharge":
-            signed = np.sign(unnorm)
-            return signed * (np.expm1(np.abs(unnorm)) * (self.q0 + self.eps))
+            return np.sinh(unnorm) * (self.q0 + self.eps)
         if self.output_field in ("eDensity", "hDensity"):
-            return np.power(10.0, unnorm)
-        return unnorm
+            return np.sinh(unnorm) * self.y_asinh_scale
+        return np.sinh(unnorm) * self.y_asinh_scale
 
     # ------------------------------
     # Persistence
@@ -256,6 +287,8 @@ class Normalizer:
             doping_log_std=self.doping_log_std,
             vds_mean=self.vds_mean,
             vds_std=self.vds_std,
+            doping_scale=self.doping_scale,
+            y_asinh_scale=self.y_asinh_scale,
             q0=self.q0,
             fitted=self.fitted,
             eps=self.eps,
@@ -281,6 +314,8 @@ class Normalizer:
         norm.doping_log_std = float(data["doping_log_std"])
         norm.vds_mean = float(data["vds_mean"])
         norm.vds_std = float(data["vds_std"])
+        norm.doping_scale = float(data.get("doping_scale", 1.0))
+        norm.y_asinh_scale = float(data.get("y_asinh_scale", 1.0))
         norm.q0 = float(data["q0"])
         norm.fitted = bool(data["fitted"])
         norm.eps = float(data["eps"])
@@ -289,12 +324,9 @@ class Normalizer:
     # ------------------------------
     # Helpers
     # ------------------------------
-    def _signed_log10(self, arr: np.ndarray) -> np.ndarray:
-        """
-        Symmetric log transform that supports signed inputs.
-        Preserves sign and compresses magnitude to keep large dynamic ranges stable.
-        """
-        return np.sign(arr) * np.log10(np.abs(arr) + self.eps)
+    def _asinh_scaled(self, arr: np.ndarray, scale: float) -> np.ndarray:
+        """Symmetric asinh transform that handles signed inputs with a robust scale."""
+        return np.arcsinh(arr / max(scale, self.eps))
 
     def _prepare_target_for_stats(self, target: np.ndarray, vds: float) -> np.ndarray:
         """
@@ -307,14 +339,14 @@ class Normalizer:
         """
         if self.output_field == "ElectrostaticPotential":
             scaled = target / max(vds, self.eps)
-            return scaled
+            return self._asinh_scaled(scaled, self.y_asinh_scale)
         if self.output_field in ("ElectricField_x", "ElectricField_y"):
             # Clip extremes per-sample before stats to reduce outlier influence
             clip_val = np.percentile(np.abs(target), 99.0)
             clipped = np.clip(target, -clip_val, clip_val)
-            return clipped
+            return self._asinh_scaled(clipped, self.y_asinh_scale)
         if self.output_field == "SpaceCharge":
-            return np.sign(target) * np.log1p(np.abs(target) / (self.q0 + self.eps))
+            return self._asinh_scaled(target, self.q0 + self.eps)
         if self.output_field in ("eDensity", "hDensity"):
-            return np.log10(target + self.eps)
-        return target
+            return self._asinh_scaled(target, self.y_asinh_scale)
+        return self._asinh_scaled(target, self.y_asinh_scale)
