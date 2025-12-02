@@ -97,7 +97,7 @@ def main() -> None:
         ):
             pred = model(batch)[config.OUTPUT_FIELD]
 
-    pred_np = pred.squeeze(-1).detach().cpu().numpy()
+    pred_np = pred.squeeze(-1).detach().cpu().float().numpy()
     target_np = batch.y.squeeze(-1).detach().cpu().numpy()
     vds_val = float(batch.vds.cpu().item())
 
