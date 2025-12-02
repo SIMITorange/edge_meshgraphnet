@@ -55,10 +55,17 @@ BOUNDARY_PERCENTILE = 90.0  # Percentile of doping gradient used to detect bound
 # ------------------------------
 # Model hyperparameters
 # ------------------------------
-HIDDEN_DIM = 256
-NUM_MESSAGE_PASSING_STEPS = 6
+HIDDEN_DIM = 128  # reduce from 256 to shrink activations/parameters
+NUM_MESSAGE_PASSING_STEPS = 4  # reduce message passing depth to save memory
 DROPOUT = 0.05
 ACTIVATION = "gelu"  # Options: "relu", "gelu"
+
+# ------------------------------
+# Precision / memory optimization
+# ------------------------------
+USE_MIXED_PRECISION = True  # use torch.cuda.amp when running on CUDA
+AMP_DTYPE = torch.float16
+USE_GRAD_CHECKPOINT = True  # checkpoint GNN blocks during training to cut activation memory
 
 # ------------------------------
 # Normalization options
@@ -105,4 +112,3 @@ def ensure_output_dirs() -> None:
     """
     for path in [OUTPUT_DIR, CHECKPOINT_DIR, LOG_DIR, FIG_DIR, NORM_DIR]:
         path.mkdir(parents=True, exist_ok=True)
-

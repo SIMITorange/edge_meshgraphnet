@@ -17,6 +17,7 @@ import argparse
 from pathlib import Path
 
 import torch
+from torch.cuda.amp import autocast
 from torch_geometric.loader import DataLoader
 
 import config
@@ -48,6 +49,7 @@ def main() -> None:
     args = parse_args()
     config.ensure_output_dirs()
     device = config.DEVICE
+    use_amp = config.USE_MIXED_PRECISION and device.type == "cuda"
 
     norm_path = config.NORM_DIR / f"{config.OUTPUT_FIELD}_normalizer.npz"
     if not norm_path.exists():
@@ -81,13 +83,15 @@ def main() -> None:
         activation=config.ACTIVATION,
         dropout=config.DROPOUT,
         target_field=config.OUTPUT_FIELD,
+        use_grad_checkpoint=config.USE_GRAD_CHECKPOINT,
     ).to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
 
     batch = next(iter(loader)).to(device)
     with torch.no_grad():
-        pred = model(batch)[config.OUTPUT_FIELD]
+        with autocast(enabled=use_amp, dtype=config.AMP_DTYPE):
+            pred = model(batch)[config.OUTPUT_FIELD]
 
     pred_np = pred.squeeze(-1).detach().cpu().numpy()
     target_np = batch.y.squeeze(-1).detach().cpu().numpy()
@@ -122,4 +126,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -12,6 +12,7 @@ from typing import Dict, Iterable, List, Optional
 import torch
 from torch import nn
 from torch_geometric.nn import MessagePassing
+from torch.utils.checkpoint import checkpoint
 
 import config
 
@@ -112,11 +113,13 @@ class MeshGraphNet(nn.Module):
         dropout: float = 0.0,
         output_fields: Optional[Iterable[str]] = None,
         target_field: Optional[str] = None,
+        use_grad_checkpoint: bool = False,
     ) -> None:
         super().__init__()
         self.target_field = target_field or config.OUTPUT_FIELD
         self.output_fields = list(output_fields) if output_fields is not None else config.AVAILABLE_OUTPUT_FIELDS
         self.activation = activation
+        self.use_grad_checkpoint = use_grad_checkpoint
 
         self.input_proj = build_mlp(
             input_dim=input_dim,
@@ -164,7 +167,10 @@ class MeshGraphNet(nn.Module):
 
         x = self.input_proj(x)
         for block in self.blocks:
-            x = block(x=x, edge_index=edge_index, pos=pos)
+            if self.use_grad_checkpoint and self.training:
+                x = checkpoint(block, x, edge_index, pos)
+            else:
+                x = block(x, edge_index, pos)
 
         requested_fields = list(fields) if fields is not None else [self.target_field]
         outputs: Dict[str, torch.Tensor] = {}

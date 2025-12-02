@@ -13,6 +13,7 @@ from typing import Dict
 
 import numpy as np
 import torch
+from torch.cuda.amp import GradScaler, autocast
 from torch_geometric.loader import DataLoader
 
 import config
@@ -42,6 +43,8 @@ def train_one_epoch(
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
+    scaler: GradScaler,
+    use_amp: bool,
 ) -> Dict[str, float]:
     """
     Single training epoch.
@@ -50,6 +53,8 @@ def train_one_epoch(
         loader: Training DataLoader.
         optimizer: Optimizer.
         device: torch.device.
+        scaler: Gradient scaler for mixed precision.
+        use_amp: Whether to enable autocast.
     Outputs:
         Dictionary of averaged losses.
     """
@@ -61,19 +66,28 @@ def train_one_epoch(
     count = 0
     for batch in loader:
         batch = batch.to(device)
-        optimizer.zero_grad()
-        outputs = model(batch)
-        pred = outputs[config.OUTPUT_FIELD]
-        loss, comps = compute_loss(
-            pred=pred,
-            target=batch.y,
-            edge_index=batch.edge_index,
-            boundary_mask=getattr(batch, "boundary_mask", None),
-        )
-        loss.backward()
-        if config.GRAD_CLIP is not None:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), config.GRAD_CLIP)
-        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        with autocast(enabled=use_amp, dtype=config.AMP_DTYPE):
+            outputs = model(batch)
+            pred = outputs[config.OUTPUT_FIELD]
+            loss, comps = compute_loss(
+                pred=pred,
+                target=batch.y,
+                edge_index=batch.edge_index,
+                boundary_mask=getattr(batch, "boundary_mask", None),
+            )
+        if use_amp:
+            scaler.scale(loss).backward()
+            if config.GRAD_CLIP is not None:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config.GRAD_CLIP)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            if config.GRAD_CLIP is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config.GRAD_CLIP)
+            optimizer.step()
 
         total_loss += comps["total"]
         total_node += comps["node_loss"]
@@ -92,6 +106,7 @@ def evaluate(
     model: MeshGraphNet,
     loader: DataLoader,
     device: torch.device,
+    use_amp: bool,
 ) -> Dict[str, float]:
     """
     Run evaluation without gradient updates.
@@ -99,6 +114,7 @@ def evaluate(
         model: MeshGraphNet instance.
         loader: Validation DataLoader.
         device: torch.device.
+        use_amp: Whether to enable autocast.
     Outputs:
         Averaged loss components.
     """
@@ -111,14 +127,15 @@ def evaluate(
     with torch.no_grad():
         for batch in loader:
             batch = batch.to(device)
-            outputs = model(batch)
-            pred = outputs[config.OUTPUT_FIELD]
-            loss, comps = compute_loss(
-                pred=pred,
-                target=batch.y,
-                edge_index=batch.edge_index,
-                boundary_mask=getattr(batch, "boundary_mask", None),
-            )
+            with autocast(enabled=use_amp, dtype=config.AMP_DTYPE):
+                outputs = model(batch)
+                pred = outputs[config.OUTPUT_FIELD]
+                loss, comps = compute_loss(
+                    pred=pred,
+                    target=batch.y,
+                    edge_index=batch.edge_index,
+                    boundary_mask=getattr(batch, "boundary_mask", None),
+                )
             total_loss += comps["total"]
             total_node += comps["node_loss"]
             total_grad += comps["grad_loss"]
@@ -159,6 +176,7 @@ def main() -> None:
     config.ensure_output_dirs()
     set_seed(config.RANDOM_SEED)
     device = config.DEVICE
+    use_amp = config.USE_MIXED_PRECISION and device.type == "cuda"
     logger.log(f"Using device: {device}")
 
     all_samples = enumerate_samples(str(config.HDF5_PATH))
@@ -206,23 +224,25 @@ def main() -> None:
         activation=config.ACTIVATION,
         dropout=config.DROPOUT,
         target_field=config.OUTPUT_FIELD,
+        use_grad_checkpoint=config.USE_GRAD_CHECKPOINT,
     ).to(device)
 
     optimizer = torch.optim.Adam(
         model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY
     )
+    scaler = GradScaler(enabled=use_amp)
 
     history = {"train_total": [], "val_total": [], "train_node": [], "val_node": [], "train_grad": [], "val_grad": []}
 
     for epoch in range(1, config.EPOCHS + 1):
-        train_metrics = train_one_epoch(model, train_loader, optimizer, device)
+        train_metrics = train_one_epoch(model, train_loader, optimizer, device, scaler, use_amp)
         history["train_total"].append(train_metrics["total"])
         history["train_node"].append(train_metrics["node"])
         history["train_grad"].append(train_metrics["grad"])
 
         val_metrics = None
         if epoch % config.VALIDATE_EVERY == 0:
-            val_metrics = evaluate(model, val_loader, device)
+            val_metrics = evaluate(model, val_loader, device, use_amp)
             history["val_total"].append(val_metrics["total"])
             history["val_node"].append(val_metrics["node"])
             history["val_grad"].append(val_metrics["grad"])
