@@ -16,7 +16,6 @@ import torch
 from torch.utils.data import Dataset
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
-from torch_scatter import scatter_mean
 
 import config
 from normalization import Normalizer
@@ -167,9 +166,18 @@ class H5MeshGraphDataset(Dataset):
         """
         src, dst = edge_index
         diff = torch.abs(doping[src] - doping[dst])
-        # Aggregate gradient magnitude to nodes
-        grad_src = scatter_mean(diff, src, dim=0, dim_size=doping.shape[0])
-        grad_dst = scatter_mean(diff, dst, dim=0, dim_size=doping.shape[0])
+        num_nodes = doping.shape[0]
+        # Aggregate gradient magnitude to nodes using scatter_add to avoid torch_scatter dependency
+        grad_src_sum = torch.zeros(num_nodes, device=doping.device).scatter_add_(0, src, diff)
+        grad_src_cnt = torch.zeros(num_nodes, device=doping.device).scatter_add_(
+            0, src, torch.ones_like(diff)
+        )
+        grad_src = grad_src_sum / grad_src_cnt.clamp(min=1)
+        grad_dst_sum = torch.zeros(num_nodes, device=doping.device).scatter_add_(0, dst, diff)
+        grad_dst_cnt = torch.zeros(num_nodes, device=doping.device).scatter_add_(
+            0, dst, torch.ones_like(diff)
+        )
+        grad_dst = grad_dst_sum / grad_dst_cnt.clamp(min=1)
         grad = 0.5 * (grad_src + grad_dst)
         threshold = torch.quantile(grad, percentile / 100.0)
         mask = (grad >= threshold).float()
@@ -256,4 +264,3 @@ def build_dataloaders(
         pin_memory=pin_memory,
     )
     return train_loader, val_loader, train_samples, val_samples
-
