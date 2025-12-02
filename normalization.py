@@ -111,7 +111,7 @@ class Normalizer:
                     fields[:, config.FIELD_TO_INDEX["ElectrostaticPotential"]].max()
                 )
 
-                doping_log = np.log10(doping + self.eps)
+                doping_log = self._signed_log10(doping)
                 x_stat.update(x_coord)
                 x_stat.update(y_coord)
                 doping_stat.update(doping_log)
@@ -184,7 +184,7 @@ class Normalizer:
         assert self.fitted, "Normalizer must be fitted before calling transform_x."
         x_norm = (x_coord - self.x_mean) / self.x_std
         y_norm = (y_coord - self.x_mean) / self.x_std  # share stats for simplicity
-        doping_log = np.log10(doping + self.eps)
+        doping_log = self._signed_log10(doping)
         doping_norm = (doping_log - self.doping_log_mean) / self.doping_log_std
         vds_norm = (vds - self.vds_mean) / self.vds_std
         vds_norm_vec = np.full_like(x_norm, vds_norm, dtype=np.float32)
@@ -289,6 +289,13 @@ class Normalizer:
     # ------------------------------
     # Helpers
     # ------------------------------
+    def _signed_log10(self, arr: np.ndarray) -> np.ndarray:
+        """
+        Symmetric log transform that supports signed inputs.
+        Preserves sign and compresses magnitude to keep large dynamic ranges stable.
+        """
+        return np.sign(arr) * np.log10(np.abs(arr) + self.eps)
+
     def _prepare_target_for_stats(self, target: np.ndarray, vds: float) -> np.ndarray:
         """
         Apply field-specific pre-processing before computing mean/std.
