@@ -64,7 +64,7 @@ ACTIVATION = "gelu"  # Options: "relu", "gelu"
 # Precision / memory optimization
 # ------------------------------
 USE_MIXED_PRECISION = True  # use torch.cuda.amp when running on CUDA
-AMP_DTYPE = torch.float16
+AMP_DTYPE = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
 USE_GRAD_CHECKPOINT = True  # checkpoint GNN blocks during training to cut activation memory
 
 # ------------------------------

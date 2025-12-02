@@ -13,7 +13,7 @@ from typing import Dict
 
 import numpy as np
 import torch
-from torch.cuda.amp import GradScaler, autocast
+from torch import amp
 from torch_geometric.loader import DataLoader
 
 import config
@@ -43,7 +43,7 @@ def train_one_epoch(
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
-    scaler: GradScaler,
+    scaler: amp.GradScaler,
     use_amp: bool,
 ) -> Dict[str, float]:
     """
@@ -66,8 +66,16 @@ def train_one_epoch(
     count = 0
     for batch in loader:
         batch = batch.to(device)
+        # Skip batches with invalid values to prevent NaNs early
+        if not torch.isfinite(batch.x).all() or not torch.isfinite(batch.y).all():
+            logger.log("Skipping batch with non-finite inputs/targets.")
+            continue
         optimizer.zero_grad(set_to_none=True)
-        with autocast(enabled=use_amp, dtype=config.AMP_DTYPE):
+        with amp.autocast(
+            device_type=device.type if device.type != "meta" else "cuda",
+            dtype=config.AMP_DTYPE if device.type == "cuda" else None,
+            enabled=use_amp,
+        ):
             outputs = model(batch)
             pred = outputs[config.OUTPUT_FIELD]
             loss, comps = compute_loss(
@@ -76,6 +84,9 @@ def train_one_epoch(
                 edge_index=batch.edge_index,
                 boundary_mask=getattr(batch, "boundary_mask", None),
             )
+        if not torch.isfinite(loss):
+            logger.log("Non-finite loss encountered; skipping step.")
+            continue
         if use_amp:
             scaler.scale(loss).backward()
             if config.GRAD_CLIP is not None:
@@ -127,7 +138,14 @@ def evaluate(
     with torch.no_grad():
         for batch in loader:
             batch = batch.to(device)
-            with autocast(enabled=use_amp, dtype=config.AMP_DTYPE):
+            if not torch.isfinite(batch.x).all() or not torch.isfinite(batch.y).all():
+                logger.log("Skipping val batch with non-finite inputs/targets.")
+                continue
+            with amp.autocast(
+                device_type=device.type if device.type != "meta" else "cuda",
+                dtype=config.AMP_DTYPE if device.type == "cuda" else None,
+                enabled=use_amp,
+            ):
                 outputs = model(batch)
                 pred = outputs[config.OUTPUT_FIELD]
                 loss, comps = compute_loss(
@@ -230,7 +248,7 @@ def main() -> None:
     optimizer = torch.optim.Adam(
         model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY
     )
-    scaler = GradScaler(enabled=use_amp)
+    scaler = amp.GradScaler(device_type="cuda", enabled=use_amp)
 
     history = {"train_total": [], "val_total": [], "train_node": [], "val_node": [], "train_grad": [], "val_grad": []}
 

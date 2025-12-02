@@ -17,7 +17,7 @@ import argparse
 from pathlib import Path
 
 import torch
-from torch.cuda.amp import autocast
+from torch import amp
 from torch_geometric.loader import DataLoader
 
 import config
@@ -90,7 +90,11 @@ def main() -> None:
 
     batch = next(iter(loader)).to(device)
     with torch.no_grad():
-        with autocast(enabled=use_amp, dtype=config.AMP_DTYPE):
+        with amp.autocast(
+            device_type=device.type if device.type != "meta" else "cuda",
+            dtype=config.AMP_DTYPE if device.type == "cuda" else None,
+            enabled=use_amp,
+        ):
             pred = model(batch)[config.OUTPUT_FIELD]
 
     pred_np = pred.squeeze(-1).detach().cpu().numpy()

@@ -168,7 +168,7 @@ class MeshGraphNet(nn.Module):
         x = self.input_proj(x)
         for block in self.blocks:
             if self.use_grad_checkpoint and self.training:
-                x = checkpoint(block, x, edge_index, pos)
+                x = checkpoint(block, x, edge_index, pos, use_reentrant=False)
             else:
                 x = block(x, edge_index, pos)
 
