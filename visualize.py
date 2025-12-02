@@ -1,23 +1,18 @@
 """
-Module purpose:
-    Inference script for running the trained surrogate on a specified sample.
-Inputs:
-    Command-line args:
-        --group: HDF5 group name (e.g., n1)
-        --sheet: Integer sheet index s
-        --checkpoint: Path to model checkpoint (defaults to latest in checkpoints dir)
-Outputs:
-    Saves numpy arrays of prediction/target and optional figures to configured folders.
+Advanced visualization script for space charge field analysis.
 
-use:
-    python infer.py --group n43 --sheet 0 --checkpoint outputs/checkpoints/meshgraphnet_epoch_X.pt
+Generates high-quality mesh visualizations with automatic depletion region detection
+and boundary line tracing.
+
+Usage:
+    python visualize.py --group n43 --sheet 0 --checkpoint outputs/checkpoints/meshgraphnet_epoch_300.pt [--mode mesh|scatter]
 """
 
 import argparse
 from pathlib import Path
 
 import torch
-from torch import amp
+import numpy as np
 from torch_geometric.loader import DataLoader
 
 import config
@@ -28,7 +23,7 @@ from utils import logger, visualization
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run inference on a single sample.")
+    parser = argparse.ArgumentParser(description="Generate advanced visualizations of field predictions.")
     parser.add_argument("--group", type=str, required=True, help="Group name, e.g., n1")
     parser.add_argument("--sheet", type=int, required=True, help="Sheet index s")
     parser.add_argument(
@@ -36,6 +31,25 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Path to checkpoint (.pt). If not provided, uses latest in checkpoint dir.",
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["mesh", "scatter"],
+        default="mesh",
+        help="Visualization mode: 'mesh' for continuous surface, 'scatter' for point cloud.",
+    )
+    parser.add_argument(
+        "--output-name",
+        type=str,
+        default=None,
+        help="Custom output filename prefix. If not provided, uses default naming.",
+    )
+    parser.add_argument(
+        "--dpi",
+        type=int,
+        default=150,
+        help="DPI for saved figures.",
     )
     return parser.parse_args()
 
@@ -63,6 +77,7 @@ def main() -> None:
         checkpoint_path = ckpts[-1]
     else:
         checkpoint_path = Path(args.checkpoint)
+    
     logger.log(f"Loading checkpoint from {checkpoint_path}")
     ckpt = load_checkpoint(checkpoint_path)
 
@@ -90,6 +105,7 @@ def main() -> None:
 
     batch = next(iter(loader)).to(device)
     with torch.no_grad():
+        from torch import amp
         with amp.autocast(
             device_type=device.type if device.type != "meta" else "cuda",
             dtype=config.AMP_DTYPE if device.type == "cuda" else None,
@@ -97,7 +113,7 @@ def main() -> None:
         ):
             pred = model(batch)[config.OUTPUT_FIELD]
 
-    # Convert BFloat16 or other non-standard types to float32 for numpy compatibility
+    # Convert to float32 for numpy compatibility
     pred = pred.float() if pred.dtype != torch.float32 else pred
     batch.y = batch.y.float() if batch.y.dtype != torch.float32 else batch.y
     
@@ -108,32 +124,32 @@ def main() -> None:
     pred_phys = normalizer.inverse_transform_y(pred_np, vds=vds_val)
     target_phys = normalizer.inverse_transform_y(target_np, vds=vds_val)
 
-    out_prefix = config.OUTPUT_DIR / f"infer_{args.group}_s{args.sheet}_{config.OUTPUT_FIELD}"
-    out_prefix.parent.mkdir(parents=True, exist_ok=True)
-    npz_path = out_prefix.with_suffix(".npz")
-    import numpy as np  # Local import to avoid dependency if not used elsewhere
+    # Determine output name
+    if args.output_name is None:
+        output_name = f"viz_{args.group}_s{args.sheet}_{config.OUTPUT_FIELD}"
+    else:
+        output_name = args.output_name
 
-    np.savez(
-        npz_path,
-        pred=pred_phys,
-        target=target_phys,
-        vds=vds_val,
-        group=args.group,
-        sheet=args.sheet,
-    )
-    logger.log(f"Saved predictions to {npz_path}")
-
-    logger.log("Generating visualizations...")
+    save_prefix = config.FIG_DIR / output_name
+    
+    logger.log(f"Mode: {args.mode}")
+    logger.log(f"Generating visualizations with {len(batch.pos)} mesh nodes...")
+    
     visualization.scatter_field_comparison(
         pos=batch.pos,
         pred=torch.from_numpy(pred_phys),
         target=torch.from_numpy(target_phys),
-        save_prefix=config.FIG_DIR / f"infer_{args.group}_s{args.sheet}_{config.OUTPUT_FIELD}",
-        title_prefix=f"Infer {args.group} s{args.sheet}",
+        save_prefix=save_prefix,
+        title_prefix=f"{args.group} Sheet {args.sheet}",
         edge_index=batch.edge_index,
-        use_mesh=True,
+        use_mesh=(args.mode == "mesh"),
     )
-    logger.log("Visualizations saved successfully!")
+    
+    logger.log(f"Visualizations saved to {save_prefix.parent}/")
+    logger.log("Files generated:")
+    logger.log(f"  - {output_name}_pred.png (Prediction)")
+    logger.log(f"  - {output_name}_true.png (Ground Truth)")
+    logger.log(f"  - {output_name}_error.png (Error)")
 
 
 if __name__ == "__main__":

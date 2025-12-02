@@ -248,7 +248,7 @@ def main() -> None:
     optimizer = torch.optim.Adam(
         model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY
     )
-    scaler = amp.GradScaler(device_type="cuda", enabled=use_amp)
+    scaler = amp.GradScaler(enabled=use_amp)
 
     history = {"train_total": [], "val_total": [], "train_node": [], "val_node": [], "train_grad": [], "val_grad": []}
 
@@ -301,6 +301,9 @@ def main() -> None:
         model.eval()
         with torch.no_grad():
             pred = model(sample)[config.OUTPUT_FIELD]
+        # Convert BFloat16 or other non-standard types to float32 for numpy compatibility
+        pred = pred.float() if pred.dtype != torch.float32 else pred
+        sample.y = sample.y.float() if sample.y.dtype != torch.float32 else sample.y
         pred_np = pred.squeeze(-1).detach().cpu().numpy()
         target_np = sample.y.squeeze(-1).detach().cpu().numpy()
         pred_phys = normalizer.inverse_transform_y(pred_np, vds=float(sample.vds.cpu().item()))
