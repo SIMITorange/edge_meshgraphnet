@@ -42,7 +42,7 @@ BATCH_SIZE = 1  # Large graphs, keep batch size at 1
 NUM_WORKERS = 0  # Increase if your HDF5 reads benefit from multiprocessing
 PIN_MEMORY = True
 
-EPOCHS = 300
+EPOCHS = 2000
 LEARNING_RATE = 1e-3
 WEIGHT_DECAY = 0.0
 GRAD_CLIP = 1.0

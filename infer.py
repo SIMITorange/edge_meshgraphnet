@@ -11,17 +11,20 @@ Outputs:
 
 use:
     python infer.py --group n43 --sheet 0 --checkpoint outputs/checkpoints/meshgraphnet_epoch_X.pt
+    python infer.py --all --checkpoint outputs/checkpoints/meshgraphnet_epoch_2000.pt
 """
 
 import argparse
 from pathlib import Path
+from typing import Sequence
 
+import numpy as np
 import torch
 from torch import amp
 from torch_geometric.loader import DataLoader
 
 import config
-from data import H5MeshGraphDataset, SampleSpec
+from data import H5MeshGraphDataset, SampleSpec, enumerate_samples
 from model import MeshGraphNet
 from normalization import Normalizer
 from utils import logger, visualization
@@ -29,8 +32,14 @@ from utils import logger, visualization
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run inference on a single sample.")
-    parser.add_argument("--group", type=str, required=True, help="Group name, e.g., n1")
-    parser.add_argument("--sheet", type=int, required=True, help="Sheet index s")
+    parser.add_argument("--group", type=str, default=None, help="Group name, e.g., n1")
+    parser.add_argument("--sheet", type=int, default=None, help="Sheet index s")
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        dest="run_all",
+        help="Run inference for all groups and sheets in the HDF5 file; ignores --group/--sheet.",
+    )
     parser.add_argument(
         "--checkpoint",
         type=str,
@@ -43,6 +52,76 @@ def parse_args() -> argparse.Namespace:
 def load_checkpoint(path: Path) -> dict:
     ckpt = torch.load(path, map_location="cpu")
     return ckpt
+
+
+def run_inference_for_samples(
+    model: MeshGraphNet,
+    normalizer: Normalizer,
+    samples: Sequence[SampleSpec],
+    device: torch.device,
+    use_amp: bool,
+) -> None:
+    """
+    Run inference/visualization for a list of SampleSpec items.
+    Saves figures into per-group subfolders under config.FIG_DIR.
+    """
+
+    dataset = H5MeshGraphDataset(
+        h5_path=str(config.HDF5_PATH),
+        samples=samples,
+        output_field=config.OUTPUT_FIELD,
+        normalizer=normalizer,
+        boundary_percentile=config.BOUNDARY_PERCENTILE,
+    )
+    loader = DataLoader(dataset, batch_size=1, shuffle=False)
+
+    for data, spec in zip(loader, samples):
+        data = data.to(device)
+        with torch.no_grad():
+            with amp.autocast(
+                device_type=device.type if device.type != "meta" else "cuda",
+                dtype=config.AMP_DTYPE if device.type == "cuda" else None,
+                enabled=use_amp,
+            ):
+                pred = model(data)[config.OUTPUT_FIELD]
+
+        pred = pred.float() if pred.dtype != torch.float32 else pred
+        data.y = data.y.float() if data.y.dtype != torch.float32 else data.y
+
+        pred_np = pred.squeeze(-1).detach().cpu().numpy()
+        target_np = data.y.squeeze(-1).detach().cpu().numpy()
+        vds_val = float(data.vds.cpu().item())
+
+        pred_phys = normalizer.inverse_transform_y(pred_np, vds=vds_val)
+        target_phys = normalizer.inverse_transform_y(target_np, vds=vds_val)
+
+        group_dir = config.FIG_DIR / spec.group
+        group_dir.mkdir(parents=True, exist_ok=True)
+        save_prefix = group_dir / f"{spec.group}_s{spec.sheet}_{config.OUTPUT_FIELD}"
+
+        # Save numeric outputs for reference
+        npz_path = save_prefix.with_suffix(".npz")
+        np.savez(
+            npz_path,
+            pred=pred_phys,
+            target=target_phys,
+            vds=vds_val,
+            group=spec.group,
+            sheet=spec.sheet,
+        )
+
+        logger.log(f"Saved predictions to {npz_path}")
+        logger.log(f"Generating visualizations for {spec.group} s{spec.sheet}...")
+        visualization.scatter_field_comparison(
+            pos=data.pos,
+            pred=torch.from_numpy(pred_phys),
+            target=torch.from_numpy(target_phys),
+            save_prefix=save_prefix,
+            title_prefix=f"Infer {spec.group} s{spec.sheet}",
+            edge_index=data.edge_index,
+            use_mesh=True,
+        )
+        logger.log("Visualizations saved successfully!")
 
 
 def main() -> None:
@@ -66,18 +145,22 @@ def main() -> None:
     logger.log(f"Loading checkpoint from {checkpoint_path}")
     ckpt = load_checkpoint(checkpoint_path)
 
-    sample = SampleSpec(group=args.group, sheet=args.sheet)
-    dataset = H5MeshGraphDataset(
-        h5_path=str(config.HDF5_PATH),
-        samples=[sample],
-        output_field=config.OUTPUT_FIELD,
-        normalizer=normalizer,
-        boundary_percentile=config.BOUNDARY_PERCENTILE,
-    )
-    loader = DataLoader(dataset, batch_size=1, shuffle=False)
+    if args.run_all:
+        samples = enumerate_samples(str(config.HDF5_PATH))
+        logger.log(f"Running inference for all groups/sheets: {len(samples)} samples")
+    else:
+        if args.group is None or args.sheet is None:
+            raise ValueError("--group and --sheet are required unless --all is set")
+        samples = [SampleSpec(group=args.group, sheet=args.sheet)]
 
     model = MeshGraphNet(
-        input_dim=dataset[0].x.shape[1],
+        input_dim=H5MeshGraphDataset(
+            h5_path=str(config.HDF5_PATH),
+            samples=[samples[0]],
+            output_field=config.OUTPUT_FIELD,
+            normalizer=normalizer,
+            boundary_percentile=config.BOUNDARY_PERCENTILE,
+        )[0].x.shape[1],
         hidden_dim=config.HIDDEN_DIM,
         num_message_passing_steps=config.NUM_MESSAGE_PASSING_STEPS,
         activation=config.ACTIVATION,
@@ -88,52 +171,7 @@ def main() -> None:
     model.load_state_dict(ckpt["model_state"])
     model.eval()
 
-    batch = next(iter(loader)).to(device)
-    with torch.no_grad():
-        with amp.autocast(
-            device_type=device.type if device.type != "meta" else "cuda",
-            dtype=config.AMP_DTYPE if device.type == "cuda" else None,
-            enabled=use_amp,
-        ):
-            pred = model(batch)[config.OUTPUT_FIELD]
-
-    # Convert BFloat16 or other non-standard types to float32 for numpy compatibility
-    pred = pred.float() if pred.dtype != torch.float32 else pred
-    batch.y = batch.y.float() if batch.y.dtype != torch.float32 else batch.y
-    
-    pred_np = pred.squeeze(-1).detach().cpu().numpy()
-    target_np = batch.y.squeeze(-1).detach().cpu().numpy()
-    vds_val = float(batch.vds.cpu().item())
-
-    pred_phys = normalizer.inverse_transform_y(pred_np, vds=vds_val)
-    target_phys = normalizer.inverse_transform_y(target_np, vds=vds_val)
-
-    out_prefix = config.OUTPUT_DIR / f"infer_{args.group}_s{args.sheet}_{config.OUTPUT_FIELD}"
-    out_prefix.parent.mkdir(parents=True, exist_ok=True)
-    npz_path = out_prefix.with_suffix(".npz")
-    import numpy as np  # Local import to avoid dependency if not used elsewhere
-
-    np.savez(
-        npz_path,
-        pred=pred_phys,
-        target=target_phys,
-        vds=vds_val,
-        group=args.group,
-        sheet=args.sheet,
-    )
-    logger.log(f"Saved predictions to {npz_path}")
-
-    logger.log("Generating visualizations...")
-    visualization.scatter_field_comparison(
-        pos=batch.pos,
-        pred=torch.from_numpy(pred_phys),
-        target=torch.from_numpy(target_phys),
-        save_prefix=config.FIG_DIR / f"infer_{args.group}_s{args.sheet}_{config.OUTPUT_FIELD}",
-        title_prefix=f"Infer {args.group} s{args.sheet}",
-        edge_index=batch.edge_index,
-        use_mesh=True,
-    )
-    logger.log("Visualizations saved successfully!")
+    run_inference_for_samples(model, normalizer, samples, device, use_amp)
 
 
 if __name__ == "__main__":
