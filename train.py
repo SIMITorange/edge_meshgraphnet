@@ -314,6 +314,7 @@ def main() -> None:
             target=torch.from_numpy(target_phys),
             save_prefix=config.FIG_DIR / f"val_sample_{sample.uid}_s{sample.sheet_idx}_{config.OUTPUT_FIELD}",
             title_prefix=f"Val n{sample.uid} s{sample.sheet_idx}",
+            field_name=config.OUTPUT_FIELD,
         )
 
 

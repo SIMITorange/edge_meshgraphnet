@@ -120,6 +120,7 @@ def run_inference_for_samples(
             title_prefix=f"Infer {spec.group} s{spec.sheet}",
             edge_index=data.edge_index,
             use_mesh=True,
+            field_name=config.OUTPUT_FIELD,
         )
         logger.log("Visualizations saved successfully!")
 

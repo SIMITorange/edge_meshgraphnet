@@ -36,7 +36,7 @@ NORM_DIR = OUTPUT_DIR / "normalizers"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 RANDOM_SEED = 42
 
-OUTPUT_FIELD = "SpaceCharge"  # Default target field
+OUTPUT_FIELD = "ElectricField_x"  # Default target field
 TRAIN_VAL_SPLIT = 0.85  # Fraction of samples used for training
 BATCH_SIZE = 1  # Large graphs, keep batch size at 1
 NUM_WORKERS = 0  # Increase if your HDF5 reads benefit from multiprocessing
