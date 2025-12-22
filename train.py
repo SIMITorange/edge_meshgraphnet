@@ -252,7 +252,26 @@ def main() -> None:
 
     history = {"train_total": [], "val_total": [], "train_node": [], "val_node": [], "train_grad": [], "val_grad": []}
 
-    for epoch in range(1, config.EPOCHS + 1):
+    start_epoch = 1
+    total_epochs = config.EPOCHS
+    checkpoint_path = config.CHECKPOINT_PATH
+    if config.CONTINUE_FROM_CHECKPOINT and checkpoint_path is not None:
+        if checkpoint_path.exists():
+            logger.log(f"Loading checkpoint from {checkpoint_path}")
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+            model.load_state_dict(checkpoint["model_state"])
+            optimizer.load_state_dict(checkpoint["optimizer_state"])
+            start_epoch = checkpoint["epoch"] + 1
+            continue_epochs = max(config.CONTINUE_EPOCHS, 1)
+            total_epochs = start_epoch + continue_epochs - 1
+            logger.log(f"Resuming training from epoch {start_epoch} for {continue_epochs} more epochs (target epoch {total_epochs})")
+        else:
+            logger.log(f"Checkpoint path {checkpoint_path} not found; training from scratch for {total_epochs} epochs")
+    else:
+        logger.log(f"Training from scratch for {total_epochs} epochs")
+
+    print_every = max(config.PRINT_EVERY, 1)
+    for epoch in range(start_epoch, total_epochs + 1):
         train_metrics = train_one_epoch(model, train_loader, optimizer, device, scaler, use_amp)
         history["train_total"].append(train_metrics["total"])
         history["train_node"].append(train_metrics["node"])
@@ -264,17 +283,12 @@ def main() -> None:
             history["val_total"].append(val_metrics["total"])
             history["val_node"].append(val_metrics["node"])
             history["val_grad"].append(val_metrics["grad"])
-            logger.log(
-                f"Epoch {epoch}: train_total={train_metrics['total']:.4f} "
-                f"val_total={val_metrics['total']:.4f}"
-            )
         else:
-            logger.log(f"Epoch {epoch}: train_total={train_metrics['total']:.4f}")
             history["val_total"].append(float("nan"))
             history["val_node"].append(float("nan"))
             history["val_grad"].append(float("nan"))
 
-        if epoch % config.CHECKPOINT_EVERY == 0 or epoch == config.EPOCHS:
+        if epoch % config.CHECKPOINT_EVERY == 0 or epoch == total_epochs:
             ckpt_path = config.CHECKPOINT_DIR / f"meshgraphnet_epoch_{epoch}.pt"
             torch.save(
                 {
@@ -287,12 +301,21 @@ def main() -> None:
             )
             logger.log(f"Saved checkpoint to {ckpt_path}")
 
+        if epoch % print_every == 0 or epoch == total_epochs:
+            log_msg = f"Epoch {epoch}: train_total={train_metrics['total']:.4f}"
+            if val_metrics is not None:
+                log_msg += f" val_total={val_metrics['total']:.4f}"
+            logger.log(log_msg)
+
     # Save training curves
     visualization.plot_training_curves(
         history=history,
         save_path=config.FIG_DIR / f"training_curves_{config.OUTPUT_FIELD}.png",
         title=f"Loss Curves ({config.OUTPUT_FIELD})",
     )
+    loss_history_path = config.LOG_DIR / f"loss_history_{config.OUTPUT_FIELD}.txt"
+    visualization.save_history_as_txt(history, loss_history_path)
+    logger.log(f"Saved loss history to {loss_history_path}")
 
     # Quick qualitative check on the first validation sample
     if len(val_dataset) > 0:

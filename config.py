@@ -36,14 +36,14 @@ NORM_DIR = OUTPUT_DIR / "normalizers"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 RANDOM_SEED = 42
 
-OUTPUT_FIELD = "ElectricField_x"  # Default target field
+OUTPUT_FIELD = "ElectrostaticPotential"  # Default target field
 TRAIN_VAL_SPLIT = 0.85  # Fraction of samples used for training
 BATCH_SIZE = 1  # Large graphs, keep batch size at 1
 NUM_WORKERS = 0  # Increase if your HDF5 reads benefit from multiprocessing
 PIN_MEMORY = True
 
-EPOCHS = 2000
-LEARNING_RATE = 1e-3
+EPOCHS = 3000
+LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 0.0
 GRAD_CLIP = 1.0
 
@@ -76,9 +76,16 @@ SPACECHARGE_Q0_SCALE = 1.0  # Multiplicative factor applied to median |q| for si
 # ------------------------------
 # Checkpointing / logging
 # ------------------------------
-CHECKPOINT_EVERY = 10  # epochs
+CHECKPOINT_EVERY = 100  # epochs
 VALIDATE_EVERY = 5
-PRINT_EVERY = 1
+PRINT_EVERY = 10
+
+# Path to the checkpoint file for resuming training (set to None to disable)
+CHECKPOINT_PATH = CHECKPOINT_DIR / "meshgraphnet_epoch_4000.pt"
+
+# Continue-from-checkpoint settings
+CONTINUE_FROM_CHECKPOINT = False
+CONTINUE_EPOCHS = 1000
 
 # ------------------------------
 # Field mapping

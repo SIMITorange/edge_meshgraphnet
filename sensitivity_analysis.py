@@ -324,15 +324,12 @@ def main() -> None:
 
     model = build_model(normalizer, device, ckpt_path)
 
-    all_samples = enumerate_samples(str(config.HDF5_PATH))
+    # Filter samples to only include sheet == 5
+    all_samples = [sample for sample in enumerate_samples(str(config.HDF5_PATH)) if sample.sheet == 5]
     if len(all_samples) == 0:
-        logger.log("No samples found; aborting analysis.")
+        logger.log("No samples with sheet == 5 found; aborting analysis.")
         return
-    if args.limit is not None:
-        all_samples = all_samples[: args.limit]
-    if len(all_samples) == 0:
-        logger.log("Zero samples after applying limit; aborting analysis.")
-        return
+
     dataset = H5MeshGraphDataset(
         h5_path=str(config.HDF5_PATH),
         samples=all_samples,
