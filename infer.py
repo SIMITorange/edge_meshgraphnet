@@ -95,6 +95,29 @@ def run_inference_for_samples(
         pred_phys = normalizer.inverse_transform_y(pred_np, vds=vds_val)
         target_phys = normalizer.inverse_transform_y(target_np, vds=vds_val)
 
+        # Error percentage statistics + plots
+        err_percent = visualization.compute_error_percent(pred_phys, target_phys, eps=1e-12)
+        error_txt_dir = config.FIG_DIR / "error" / "txt"
+        error_plot_dir = config.FIG_DIR / "error" / "plot"
+        error_txt_dir.mkdir(parents=True, exist_ok=True)
+        error_plot_dir.mkdir(parents=True, exist_ok=True)
+        err_base = f"{spec.group}_s{spec.sheet}_{config.OUTPUT_FIELD}_error_percent"
+        err_txt_path = error_txt_dir / f"{err_base}.txt"
+        err_plot_path = error_plot_dir / f"{err_base}.png"
+
+        visualization.save_error_percent_bins_txt(
+            err_percent,
+            save_path=err_txt_path,
+            title=f"Error% bins for {spec.group} s{spec.sheet} ({config.OUTPUT_FIELD})",
+        )
+        visualization.plot_error_percent_hist(
+            err_percent,
+            save_path=err_plot_path,
+            title=f"{spec.group} s{spec.sheet} {config.OUTPUT_FIELD} error% histogram",
+        )
+        logger.log(f"Saved error% bin stats to {err_txt_path}")
+        logger.log(f"Saved error% histogram to {err_plot_path}")
+
         group_dir = config.FIG_DIR / spec.group
         group_dir.mkdir(parents=True, exist_ok=True)
         save_prefix = group_dir / f"{spec.group}_s{spec.sheet}_{config.OUTPUT_FIELD}"
